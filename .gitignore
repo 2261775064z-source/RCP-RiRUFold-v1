@@ -1,0 +1,16 @@
+.venv/
+.mplconfig/
+__pycache__/
+*.pyc
+datasets/
+docs/*.pdf
+research_work/
+figures/_qa/
+*.pkl
+*.pth
+*.pt
+*.ckpt
+events.out.tfevents.*
+result*/
+checkpoints/
+outputs/
