@@ -1,23 +1,81 @@
-# RiRUFold_ADMM / RCP-RiRUFold：研究、训练、测试与诊断手册
+# RiRUFold_ADMM / RCP / CMC：研究、训练、测试与诊断手册
 
 > 新方法的论文创新表述、网络流程图、代码映射以及最新服务器训练/测试命令，统一以
-> `创新方法与服务器复现指南.md` 为准。本文后半部分第 1–8 节保留的是旧
+> 第一套的 `RCP两个研究点_公式代码实验对照.md` 和第二套的
+> `CMC创新方法与服务器复现指南.md` 为准；`创新方法与服务器复现指南.md` 保留
+> 第一套的扩展复现细节。本文后半部分第 1–8 节保留的是旧
 > `rirufold_admm` 基线说明，不应作为 RCP 主线的训练入口。
 
 在 `RPCANet-main` 根目录运行以下命令。本目录保存新模型、脚本与方案文档；实际
 模型注册和训练入口分别位于 `models/__init__.py` 与 `train.py`。
 
+## 第二套方案：CMC-RiRUFold
+
+CMC-RiRUFold 的重点不是再次修改第一方案的可靠性阈值，而是重新定义背景观测：
+先用无标签候选掩膜降低疑似目标位置的输入保真，再从同图可靠环域构造行随机侧先验，
+经过两次“侧信息—patch 低秩”交换后做正精度共识。公式推导、代码映射、创新边界、
+训练/测试命令和否证条件见 `CMC创新方法与服务器复现指南.md`。
+
+关键文件：
+
+| 内容 | 文件 |
+|---|---|
+| CMC 主线与四个消融 | `models/rirufold_cmc.py` |
+| 数值/梯度/消融门禁 | `scripts/smoke_test_rirufold_cmc.py` |
+| 服务器评测与诊断链路烟测 | `scripts/smoke_test_cmc_server_pipeline.py` |
+| 服务器完整矩阵统计/作图烟测 | `scripts/smoke_test_cmc_result_analysis.py` |
+| 机制数据与 q2 论文图 | `scripts/run_cmc_research.py` |
+| 训练 checkpoint 状态导出 | `scripts/diagnose_rirufold_cmc.py` |
+| 三数据集三种子批量脚本 | `scripts/run_cmc_server_ablation.sh` |
+| 完整性校验、配对统计与论文结果图 | `scripts/analyze_cmc_server_results.py` |
+
+本地验证：
+
+```powershell
+cd D:\python_DM\RPCANet-main\RiRUFold_ADMM
+.\.venv\Scripts\python.exe scripts\smoke_test_rirufold_cmc.py
+.\.venv\Scripts\python.exe scripts\smoke_test_cmc_server_pipeline.py
+.\.venv\Scripts\python.exe scripts\smoke_test_cmc_result_analysis.py
+.\.venv\Scripts\python.exe scripts\run_cmc_research.py --seed 20260912
+```
+
+两套方案的一键本地复现命令：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\reproduce_all.py
+```
+
+![CMC 掩蔽补全过程](figures/process_q2_mask_completion_sequence.png)
+
+![CMC 消融机制证据](figures/result_q2_mechanism_metrics.png)
+
+这些图是未训练机制核验，不是检测精度；正式服务器矩阵直接运行：
+
+```bash
+bash RiRUFold_ADMM/scripts/run_cmc_server_ablation.sh
+```
+
+批量训练完成后会严格核验 `3 数据集 × 7 模型 × 3 种子=63` 个完整测试单元，并在
+`result_rirufold_cmc/analysis/` 自动生成逐种子表、mean±std 主表、CMC 相对各模型的
+配对增益、三组 PNG/SVG 论文结果图和 `CMC服务器结果报告.md`。任何缺失单元、重复
+单元、partial test、测试数量不完整、checkpoint 重用、同数据集 split hash 或
+threshold 不一致都会拒绝出图。
+
 ## 本轮新增：RCP-RiRUFold
 
-新主线为 **Reliability-Calibrated Patch-Consensus RiRUFold**。它以三尺度重叠
-patch-SVT 去噪锚点、分支不一致性、可靠性对数池化、有硬界的双侧学习校正、逐样本
-`mu` 和 scaled-dual 重标为核心。物理稀疏强度 `S` 与分割 logits 已彻底分离：
-Soft-IoU 使用 logits，`L_dc` 只使用 `aux["sparse_intensity"]`。
+RCP 主线只主张两个研究点：**中位偏差加权的多尺度块提升低秩背景估计**，以及
+**尺度分歧门控的双证据稀疏重加权**。第一点把整图矩阵 SVT 改为三个尺度条件的
+块提升矩阵 SVT，并在逐像素中位数参照下抑制偏差较大的尺度；第二点把尺度背景分歧
+`Delta_B` 显式变成结构证据门控 `pi_B`，再与稀疏状态证据在对数域组合为阈值权重。
+硬有界校正、逐样本 `mu`、scaled-dual 重标和稳定 SVD 梯度只作为实现保障，不另计
+创新点。物理稀疏强度 `S` 与分割 logits 已分离：Soft-IoU 使用 logits，`L_dc` 只
+使用 `aux["sparse_intensity"]`。
 
 权威入口与实现：
 
 | 内容 | 文件 |
 |---|---|
+| 两个研究点、完整公式、代码和实验逐项对照 | `RCP两个研究点_公式代码实验对照.md` |
 | 建模合同、质疑与可证伪门槛 | `题目分析报告.md` |
 | 符号、单位和禁用表述 | `术语表格.md` |
 | RCP 主线和全部消融 | `models/rirufold_rcp.py` |
@@ -51,7 +109,7 @@ $env:MPLCONFIGDIR=(Resolve-Path '.').Path+'\.mplconfig'
 
 | 图 | 用途 |
 |---|---|
-| ![多尺度 patch 共识](figures/process_q1_patch_consensus.png) | 说明多尺度 patch-SVT 如何形成背景共识及分支不一致性。 |
+| ![三尺度背景估计与融合](figures/process_q1_patch_consensus.png) | 说明三个尺度条件的块提升矩阵 SVT 如何产生背景估计并进行中位偏差加权融合。 |
 | ![RCP 机制门禁](figures/result_q1_mechanism_metrics.png) | 对照预注册门槛展示主线与消融的机制指标。 |
 | ![真实 NUDT 阶段轨迹](figures/result_q1_real_nudt_trace.png) | 检查真实图像上的逐阶段残差、惩罚参数和权重演化。 |
 | ![合成分解结果](figures/result_q1_synthetic_decomposition.png) | 展示背景、稀疏目标与重建残差的可解释分解。 |
@@ -71,7 +129,7 @@ $env:MPLCONFIGDIR=(Resolve-Path '.').Path+'\.mplconfig'
 
 | `--net-name` | 作用 | 默认进入正式矩阵 |
 |---|---|---:|
-| `rirufold_rcp` | 三尺度共识 + 可靠性 log-pool + dual feedback | 是 |
+| `rirufold_rcp` | 三尺度块提升低秩估计 + 分歧门控双证据重加权 + dual feedback | 是 |
 | `rirufold_rcp_product` | 固定 log-product 消融 | 是 |
 | `rirufold_rcp_nofeedback` | 关闭 residual/dual feedback | 是 |
 | `rirufold_rcp_global` | 整图 SVT 消融 | 是 |

@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 from RiRUFold_ADMM.models.rirufold_rcp import (  # noqa: E402
     RCPRiRUFold,
     build_rcp_model,
+    median_deviation_fusion,
     overlapping_patch_svt,
 )
 
@@ -64,6 +65,18 @@ def main() -> None:
     assert fold_error < 1.0e-5, fold_error
     results["zero_threshold_fold_max_abs_error"] = fold_error
 
+    # Research point 1 contract: increasing one branch's median-referenced
+    # deviation must strictly reduce that branch's bias-free fusion weight.
+    scale = torch.ones((1, 1, 1, 1))
+    kappa = torch.tensor(1.0)
+    mild = torch.tensor([0.0, 0.0, 0.5]).view(1, 3, 1, 1, 1)
+    severe = torch.tensor([0.0, 0.0, 1.5]).view(1, 3, 1, 1, 1)
+    _, mild_weights, _ = median_deviation_fusion(mild, scale, kappa)
+    _, severe_weights, _ = median_deviation_fusion(severe, scale, kappa)
+    assert severe_weights[0, 2, 0, 0, 0] < mild_weights[0, 2, 0, 0, 0]
+    results["outlier_weight_mild"] = float(mild_weights[0, 2, 0, 0, 0])
+    results["outlier_weight_severe"] = float(severe_weights[0, 2, 0, 0, 0])
+
     image = _structured_batch().requires_grad_(True)
     model = build_rcp_model("rirufold_rcp", stage_num=1, hidden_channels=8)
     background, logits, aux = model(image, return_aux=True)
@@ -84,8 +97,10 @@ def main() -> None:
     model.eval()
     with torch.no_grad():
         _, _, trace = model(image.detach(), return_trace=True)
-    assert len(trace) == 1 and trace[0]["patch_anchors"].shape[1] == 3
+    assert len(trace) == 1 and trace[0]["scale_backgrounds"].shape[1] == 3
     state = trace[0]
+    assert not hasattr(model.stages[0].background_estimator, "branch_bias")
+    assert torch.allclose(state["scale_weights"].sum(dim=1), torch.ones_like(state["background"]))
     assert ((state["w_rcp"] >= 0.25) & (state["w_rcp"] <= 4.0)).all()
     assert ((state["alpha"] > 0.05) & (state["alpha"] < 1.0)).all()
     assert ((state["mu_next"] >= 0.05) & (state["mu_next"] <= 20.0)).all()
@@ -148,6 +163,8 @@ def main() -> None:
     # Registered ablations must all build and preserve the two-output contract.
     for variant in (
         "rirufold_rcp_product",
+        "rirufold_rcp_fixedgate",
+        "rirufold_rcp_mean",
         "rirufold_rcp_nofeedback",
         "rirufold_rcp_blob",
         "rirufold_rcp_global",
@@ -156,6 +173,21 @@ def main() -> None:
         with torch.no_grad():
             candidate_background, candidate_logits = candidate(sample[:, :, :18, :18])
         assert candidate_background.shape == candidate_logits.shape == (1, 1, 18, 18)
+
+    with torch.no_grad():
+        mean_trace = build_rcp_model(
+            "rirufold_rcp_mean", stage_num=1, hidden_channels=4
+        )(sample[:, :, :18, :18], return_trace=True)[2][0]
+        fixed_trace = build_rcp_model(
+            "rirufold_rcp_fixedgate", stage_num=1, hidden_channels=4
+        )(sample[:, :, :18, :18], return_trace=True)[2][0]
+    assert torch.allclose(
+        mean_trace["scale_weights"],
+        torch.full_like(mean_trace["scale_weights"], 1.0 / 3.0),
+    )
+    assert torch.allclose(
+        fixed_trace["structure_gate"], torch.full_like(fixed_trace["structure_gate"], 0.5)
+    )
 
     # One real local image exercises decoding and the complete trace path.  Resize
     # is intentional here: this gate validates the chain, not dataset accuracy.

@@ -13,10 +13,12 @@ EVALUATE_AFTER_TRAIN="${EVALUATE_AFTER_TRAIN:-1}"
 
 variants=(
   rirufold_admm
+  rirufold_rcp_global
+  rirufold_rcp_mean
   rirufold_rcp_product
+  rirufold_rcp_fixedgate
   rirufold_rcp
   rirufold_rcp_nofeedback
-  rirufold_rcp_global
 )
 if [[ "${INCLUDE_BLOB:-0}" == "1" ]]; then
   variants+=(rirufold_rcp_blob)

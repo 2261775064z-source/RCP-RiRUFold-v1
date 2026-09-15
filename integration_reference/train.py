@@ -62,6 +62,10 @@ def parse_args():
                         help='target-excluded background loss weight for rirufold_admm')
     parser.add_argument('--prox-weight', type=float, default=0.005,
                         help='bounded-correction deviation weight for rirufold_rcp')
+    parser.add_argument('--mask-budget-weight', type=float, default=0.1,
+                        help='unsupervised candidate-area budget weight for rirufold_cmc')
+    parser.add_argument('--cf-weight', type=float, default=0.01,
+                        help='counterfactual background consistency weight for rirufold_cmc')
     # Rank parameters
     #
     # parser.add_argument('--rank', type=int, default=8,
@@ -160,6 +164,7 @@ class Trainer(object):
         self.net = self.net.to(self.device)
         self.is_rirufold_admm = args.net_name.startswith('rirufold_admm')
         self.is_rirufold_rcp = args.net_name.startswith('rirufold_rcp')
+        self.is_rirufold_cmc = args.net_name.startswith('rirufold_cmc')
 
         ## criterion
         self.softiou = SoftLoULoss()
@@ -198,29 +203,43 @@ class Trainer(object):
         experiments and checkpoints remain comparable.
         """
         loss_softiou = self.softiou(out_target, labels)
-        if not (self.is_rirufold_admm or self.is_rirufold_rcp):
+        loss_budget = torch.zeros((), device=data.device)
+        loss_counterfactual = torch.zeros((), device=data.device)
+        if not (self.is_rirufold_admm or self.is_rirufold_rcp or self.is_rirufold_cmc):
             loss_reconstruction = self.mse(out_background, data)
             loss_background = torch.zeros((), device=data.device)
             loss_all = loss_softiou + 0.01 * loss_reconstruction
             loss_prox = torch.zeros((), device=data.device)
-            return loss_all, loss_softiou, loss_reconstruction, loss_background, loss_prox
+            return (
+                loss_all, loss_softiou, loss_reconstruction, loss_background,
+                loss_prox, loss_budget, loss_counterfactual,
+            )
 
-        sparse_intensity = aux['sparse_intensity'] if self.is_rirufold_rcp else out_target
+        has_auxiliary_sparse = self.is_rirufold_rcp or self.is_rirufold_cmc
+        sparse_intensity = aux['sparse_intensity'] if has_auxiliary_sparse else out_target
         loss_reconstruction = torch.mean(torch.abs(data - out_background - sparse_intensity))
         loss_background = torch.mean(torch.abs((1.0 - labels) * (out_background - data)))
-        loss_prox = aux['prox_loss'] if self.is_rirufold_rcp else torch.zeros((), device=data.device)
+        loss_prox = aux['prox_loss'] if has_auxiliary_sparse else torch.zeros((), device=data.device)
+        if self.is_rirufold_cmc:
+            loss_budget = aux['mask_budget_loss']
+            loss_counterfactual = aux['counterfactual_loss']
         loss_all = (
             loss_softiou
             + self.args.dc_weight * loss_reconstruction
             + self.args.bg_weight * loss_background
             + self.args.prox_weight * loss_prox
+            + self.args.mask_budget_weight * loss_budget
+            + self.args.cf_weight * loss_counterfactual
         )
-        return loss_all, loss_softiou, loss_reconstruction, loss_background, loss_prox
+        return (
+            loss_all, loss_softiou, loss_reconstruction, loss_background,
+            loss_prox, loss_budget, loss_counterfactual,
+        )
 
     def training(self):
         # training step
         start_time = time.time()
-        base_log = "Epoch-Iter: [{:d}/{:d}]-[{:d}/{:d}] || Lr: {:.6f} || Loss: {:.4f}=Seg:{:.4f}+DC:{:.4f}+BG:{:.4f}+Prox:{:.4f} || " \
+        base_log = "Epoch-Iter: [{:d}/{:d}]-[{:d}/{:d}] || Lr: {:.6f} || Loss: {:.4f}=Seg:{:.4f}+DC:{:.4f}+BG:{:.4f}+Prox:{:.4f}+Budget:{:.4f}+CF:{:.4f} || " \
                    "Cost Time: {} || Estimated Time: {}"
         for epoch in range(args.epochs):
             for i, (data, labels) in enumerate(self.train_data_loader):
@@ -231,13 +250,13 @@ class Trainer(object):
                 data = data.to(self.device)
 
                 labels = labels.to(self.device)
-                if self.is_rirufold_rcp:
+                if self.is_rirufold_rcp or self.is_rirufold_cmc:
                     out_D, out_T, aux = self.net(data, return_aux=True)
                 else:
                     out_D, out_T = self.net(data)
                     aux = None
 
-                loss_all, loss_softiou, loss_dc, loss_bg, loss_prox = self.compute_loss(
+                loss_all, loss_softiou, loss_dc, loss_bg, loss_prox, loss_budget, loss_cf = self.compute_loss(
                     data, labels, out_D, out_T, aux
                 )
 
@@ -256,12 +275,15 @@ class Trainer(object):
                 self.writer.add_scalar('Train Loss/Loss Decomposition', np.mean(loss_dc.item()), self.iter_num)
                 self.writer.add_scalar('Train Loss/Loss Background', np.mean(loss_bg.item()), self.iter_num)
                 self.writer.add_scalar('Train Loss/Loss Proximal Deviation', np.mean(loss_prox.item()), self.iter_num)
+                self.writer.add_scalar('Train Loss/Loss Mask Budget', np.mean(loss_budget.item()), self.iter_num)
+                self.writer.add_scalar('Train Loss/Loss Counterfactual', np.mean(loss_cf.item()), self.iter_num)
                 self.writer.add_scalar('Learning rate/', trainer.optimizer.param_groups[0]['lr'], self.iter_num)
 
                 if self.iter_num % self.args.log_per_iter == 0:
                     self.logger.info(base_log.format(epoch + 1, args.epochs, self.iter_num % self.iter_per_epoch,
                                                      self.iter_per_epoch, self.optimizer.param_groups[0]['lr'],
                                                      loss_all.item(), loss_softiou.item(), loss_dc.item(), loss_bg.item(), loss_prox.item(),
+                                                     loss_budget.item(), loss_cf.item(),
                                                      cost_string, eta_string))
 
                 if (self.iter_num % args.save_iter_step) == 0 or self.iter_num % self.iter_per_epoch == 0:
@@ -275,12 +297,12 @@ class Trainer(object):
             with torch.no_grad():
                 device_data = data.to(self.device)
                 device_labels = labels.to(self.device)
-                if self.is_rirufold_rcp:
+                if self.is_rirufold_rcp or self.is_rirufold_cmc:
                     out_D, out_T, aux = self.net(device_data, return_aux=True)
                 else:
                     out_D, out_T = self.net(device_data)
                     aux = None
-                loss_all, loss_softiou, loss_dc, loss_bg, loss_prox = self.compute_loss(
+                loss_all, loss_softiou, loss_dc, loss_bg, loss_prox, loss_budget, loss_cf = self.compute_loss(
                     device_data, device_labels, out_D, out_T, aux
                 )
             out_D, out_T = out_D.cpu(), out_T.cpu()

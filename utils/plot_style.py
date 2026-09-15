@@ -435,6 +435,12 @@ def export_figure(
     png_path = stem.with_suffix(".png")
     # 不使用 bbox_inches='tight'，否则会改变图表契约中的最终物理尺寸。
     fig.savefig(svg_path)
+    # Matplotlib writes spaces at the ends of a few SVG path-definition lines.
+    # Normalize them so generated publication assets pass Git whitespace checks.
+    svg_text = svg_path.read_text(encoding="utf-8")
+    normalized_svg = "\n".join(line.rstrip() for line in svg_text.splitlines()) + "\n"
+    if normalized_svg != svg_text:
+        svg_path.write_text(normalized_svg, encoding="utf-8")
     fig.savefig(png_path, dpi=dpi)
     outputs = {"svg": str(svg_path), "png": str(png_path)}
     if grayscale_preview:

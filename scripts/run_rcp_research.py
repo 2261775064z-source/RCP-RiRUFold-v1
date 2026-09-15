@@ -313,21 +313,21 @@ def export_process_figures(
     plt.close(fig)
 
     branch_means = np.asarray(
-        [item["branch_weights"].mean(dim=(0, 2, 3, 4)).cpu().numpy() for item in main_trace]
+        [item["scale_weights"].mean(dim=(0, 2, 3, 4)).cpu().numpy() for item in main_trace]
     )
-    uncertainty = main_trace[-1]["uncertainty"].cpu().numpy().ravel()
+    scale_disagreement = main_trace[-1]["scale_disagreement"].cpu().numpy().ravel()
     fig, axes = publication_subplots(1, 2, width="report", aspect=0.52, width_ratios=[1.45, 1.0])
     labels = ["8/4", "12/6", "16/8"]
     colors = [PALETTE["primary"], PALETTE["secondary"], PALETTE["positive"]]
     markers = ["o", "s", "^"]
     for index, label in enumerate(labels):
         axes[0].plot(stages, branch_means[:, index], marker=markers[index], color=colors[index], label=label)
-    axes[0].set(title="Patch consensus", xlabel="Unfolding stage", ylabel="Mean branch weight", xticks=stages, ylim=(0, 1))
+    axes[0].set(title="Deviation-weighted fusion", xlabel="Unfolding stage", ylabel="Mean scale weight", xticks=stages, ylim=(0, 1))
     axes[0].legend(title="Patch/stride", ncols=3)
-    axes[1].hist(uncertainty, bins=18, color=PALETTE["neutral"], alpha=0.85)
+    axes[1].hist(scale_disagreement, bins=18, color=PALETTE["neutral"], alpha=0.85)
     axes[1].set(title="Final disagreement", xlabel="Normalized disagreement", ylabel="Pixel count")
     add_panel_labels(axes)
-    export_figure(fig, figures_dir / "process_q1_patch_consensus")
+    export_figure(fig, figures_dir / "process_q1_scale_fusion")
     plt.close(fig)
 
     fig, axis = publication_subplots(width="report", aspect=0.52)
@@ -588,7 +588,7 @@ def main() -> None:
                 "alpha_mean": float(state["alpha"].mean()),
                 "weight_min": float(state["w_rcp"].min()),
                 "weight_max": float(state["w_rcp"].max()),
-                "uncertainty_mean": float(state["uncertainty"].mean()),
+                "scale_disagreement_mean": float(state["scale_disagreement"].mean()),
                 "background_correction_ratio": float(
                     state["background_delta"].abs().mean()
                     / (state["background_scale"].mean() + 1.0e-6)

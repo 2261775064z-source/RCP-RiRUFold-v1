@@ -1,0 +1,58 @@
+{
+  "scope": "deterministic untrained mechanism validation; not benchmark accuracy",
+  "seed": 20260912,
+  "stage_num": 3,
+  "hidden_channels": 8,
+  "scene_size": 40,
+  "mechanism_scenes": 8,
+  "nudt_profile_images": 32,
+  "variant_medians": {
+    "rirufold_cmc": {
+      "target_absorption_mae": 0.036197006702423096,
+      "background_mae": 0.0008311641577165574,
+      "target_sparse_mean": 0.3830152750015259,
+      "edge_sparse_mean": 0.00037155031168367714,
+      "target_edge_contrast": 0.3827996701002121
+    },
+    "rirufold_cmc_nomask": {
+      "target_absorption_mae": 0.41786910593509674,
+      "background_mae": 0.0008780221687629819,
+      "target_sparse_mean": 0.0,
+      "edge_sparse_mean": 0.0,
+      "target_edge_contrast": 0.0
+    },
+    "rirufold_cmc_noside": {
+      "target_absorption_mae": 0.41555623710155487,
+      "background_mae": 0.0009012469090521336,
+      "target_sparse_mean": 0.0,
+      "edge_sparse_mean": 0.0,
+      "target_edge_contrast": 0.0
+    },
+    "rirufold_cmc_onepass": {
+      "target_absorption_mae": 0.03638698160648346,
+      "background_mae": 0.0007902430079411715,
+      "target_sparse_mean": 0.38376839458942413,
+      "edge_sparse_mean": 0.00033411839103791863,
+      "target_edge_contrast": 0.38357265293598175
+    },
+    "rirufold_cmc_fixedmask": {
+      "target_absorption_mae": 0.04340207576751709,
+      "background_mae": 0.0012620326597243547,
+      "target_sparse_mean": 0.3739629089832306,
+      "edge_sparse_mean": 0.0016199253150261939,
+      "target_edge_contrast": 0.37300801277160645
+    }
+  },
+  "software": {
+    "python": "3.12.14",
+    "torch": "2.14.0+cpu",
+    "numpy": "2.5.3",
+    "device": "cpu"
+  },
+  "source_sha256": {
+    "model": "37CA77AC36DFBFF4FCBB2015E9AD7F6174DB0A045C4BC01AEEA9194864066CC2",
+    "script": "737F1281818B1ADF92CACDDA5EE813896DA8C9E6E4DBC1D02E74FDF3FB02B603",
+    "analysis": "040E31F808E33F83F7984B0485D1ADBD03C13C9811DC88B962660A053D6039E1"
+  },
+  "reproduce": ".venv/Scripts/python.exe scripts/run_cmc_research.py --seed 20260912"
+}

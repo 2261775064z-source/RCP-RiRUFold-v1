@@ -1,16 +1,15 @@
-"""Reliability-Calibrated Patch-Consensus RiRUFold (RCP-RiRUFold).
+"""RCP-RiRUFold with two explicit and independently testable research points.
 
-The implementation follows the contract in ``../题目分析报告.md``:
+Research point 1 changes the background update: three scale-conditioned
+patch-lifted matrices are singular-value shrunk, coverage-normalized, and fused
+with a bias-free median-referenced deviation rule.  Research point 2 changes
+the sparse update: the resulting inter-scale disagreement controls a spatial
+gate between structure-tensor evidence and sparse-state evidence.
 
-* three overlapping patch-SVT denoising anchors (or a global-SVT ablation),
-* reliability-calibrated log-domain sparse weights,
-* hard-bounded learned corrections around explicit anchors,
-* per-sample residual-balanced penalties with scaled-dual rescaling, and
-* a strict separation between physical sparse intensity and segmentation logits.
-
-Patch-SVT is deliberately described as a denoising anchor.  Overlapping patch
-lifting is not orthogonal, so this module does not claim that fold(SVT(unfold))
-is the exact image-domain proximal map of a patch nuclear-norm objective.
+Hard-bounded corrections, per-sample residual balancing, and the stabilized
+SVD derivative are implementation safeguards rather than additional research
+claims.  Because overlapping patch lifting is not orthogonal, this module does
+not claim an exact image-domain proximal map for an overlapping nuclear norm.
 """
 
 from __future__ import annotations
@@ -27,6 +26,9 @@ __all__ = [
     "RCPRiRUFold",
     "RCPUnfoldStage",
     "FixedStructureTensor",
+    "MultiScalePatchLowRankEstimator",
+    "DisagreementGatedSparseWeight",
+    "median_deviation_fusion",
     "overlapping_patch_svt",
     "build_rcp_model",
 ]
@@ -63,7 +65,7 @@ def _spatial_standardize(value: torch.Tensor) -> torch.Tensor:
 
 
 def positive_soft_threshold(value: torch.Tensor, threshold: torch.Tensor) -> torch.Tensor:
-    """Exact nonnegative weighted-l1 proximal anchor for bright targets."""
+    """Exact nonnegative weighted-l1 proximal update for bright targets."""
     return F.relu(value - threshold)
 
 
@@ -212,45 +214,80 @@ class BoundedCorrection(nn.Module):
         return delta, gamma
 
 
-class PatchConsensusAnchor(nn.Module):
-    """Three-scale robust fusion of overlapping patch-SVT denoising anchors."""
+def median_deviation_fusion(
+    estimates: torch.Tensor,
+    input_scale: torch.Tensor,
+    kappa: torch.Tensor,
+    mode: str = "deviation",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fuse scale-conditioned estimates and return weights and disagreement.
 
-    def __init__(self, patch_specs: Sequence[Tuple[int, int]]) -> None:
+    ``estimates`` has shape BxSxCxHxW and ``input_scale`` has shape BxCx1x1.
+    In the main ``deviation`` mode, every weight is a bias-free softmax of the
+    negative normalized distance to the pixelwise median.  Therefore, holding
+    the other deviations fixed, d(weight_s)/d(distance_s) is strictly negative.
+    ``mean`` is the registered equal-weight ablation for research point 1.
+    """
+    if estimates.ndim != 5:
+        raise ValueError("estimates must have shape BxSxCxHxW")
+    if mode not in {"deviation", "mean"}:
+        raise ValueError("mode must be 'deviation' or 'mean'")
+    branch_count = estimates.shape[1]
+    center = torch.median(estimates, dim=1).values
+    distances = torch.abs(estimates - center.unsqueeze(1)) / (
+        input_scale.unsqueeze(1) + EPS_SCALE
+    )
+    if mode == "mean":
+        weights = torch.full_like(estimates, 1.0 / float(branch_count))
+    else:
+        weights = torch.softmax(-kappa * distances, dim=1)
+    fused = (weights * estimates).sum(dim=1)
+    disagreement = torch.sqrt(
+        (weights * (estimates - fused.unsqueeze(1)).square()).sum(dim=1) + EPS_SCALE**2
+    ) / (input_scale + EPS_SCALE)
+    return fused, weights, disagreement
+
+
+class MultiScalePatchLowRankEstimator(nn.Module):
+    """Three scale-conditioned patch-lifted low-rank background estimates."""
+
+    def __init__(
+        self,
+        patch_specs: Sequence[Tuple[int, int]],
+        fusion_mode: str = "deviation",
+    ) -> None:
         super().__init__()
         if len(patch_specs) != 3:
             raise ValueError("The RCP contract requires exactly three patch scales")
+        if fusion_mode not in {"deviation", "mean"}:
+            raise ValueError("fusion_mode must be 'deviation' or 'mean'")
         self.patch_specs = tuple((int(p), int(s)) for p, s in patch_specs)
+        self.fusion_mode = fusion_mode
         self.raw_tau = nn.Parameter(
             torch.tensor([_inverse_softplus(0.025), _inverse_softplus(0.035), _inverse_softplus(0.045)])
         )
-        self.branch_bias = nn.Parameter(torch.zeros(3))
         self.raw_kappa = nn.Parameter(torch.tensor(_inverse_softplus(1.0)))
 
     def forward(
         self, value: torch.Tensor, mu: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         tau = F.softplus(self.raw_tau) + EPS_SCALE
-        anchors: List[torch.Tensor] = []
+        scale_estimates: List[torch.Tensor] = []
         for index, (patch_size, stride) in enumerate(self.patch_specs):
             threshold = tau[index] / mu.clamp_min(0.05)
-            anchors.append(overlapping_patch_svt(value, threshold, patch_size, stride))
-        anchor_stack = torch.stack(anchors, dim=1)
-        robust_center = torch.median(anchor_stack, dim=1).values
+            scale_estimates.append(overlapping_patch_svt(value, threshold, patch_size, stride))
+        estimate_stack = torch.stack(scale_estimates, dim=1)
         centered = value - value.mean(dim=(2, 3), keepdim=True)
         sigma = torch.sqrt(centered.square().mean(dim=(2, 3), keepdim=True) + EPS_SCALE**2)
-        distance = torch.abs(anchor_stack - robust_center.unsqueeze(1)) / (sigma.unsqueeze(1) + EPS_SCALE)
         kappa = F.softplus(self.raw_kappa) + EPS_SCALE
-        logits = self.branch_bias.view(1, 3, 1, 1, 1) - kappa * distance
-        weights = torch.softmax(logits, dim=1)
-        fused = (weights * anchor_stack).sum(dim=1)
-        disagreement = torch.sqrt(
-            (weights * (anchor_stack - fused.unsqueeze(1)).square()).sum(dim=1) + EPS_SCALE**2
-        ) / (sigma + EPS_SCALE)
-        return fused, anchor_stack, weights, disagreement
+        fused, weights, disagreement = median_deviation_fusion(
+            estimate_stack, sigma, kappa, mode=self.fusion_mode
+        )
+        return fused, estimate_stack, weights, disagreement
 
 
-class GlobalAnchor(nn.Module):
-    """Whole-image SVT ablation with the same output contract as patch consensus."""
+class GlobalLowRankEstimator(nn.Module):
+    """Whole-image SVT ablation with the same output contract as research point 1."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -260,35 +297,35 @@ class GlobalAnchor(nn.Module):
         self, value: torch.Tensor, mu: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         threshold = (F.softplus(self.raw_tau) + EPS_SCALE) / mu.clamp_min(0.05)
-        anchor = global_svt(value, threshold)
-        stack = anchor.unsqueeze(1)
+        estimate = global_svt(value, threshold)
+        stack = estimate.unsqueeze(1)
         weights = torch.ones_like(stack)
-        disagreement = torch.zeros_like(anchor)
-        return anchor, stack, weights, disagreement
+        disagreement = torch.zeros_like(estimate)
+        return estimate, stack, weights, disagreement
 
 
-class ReliabilityCalibratedWeight(nn.Module):
-    """Stable log-domain fusion of structure and reciprocal sparse evidence."""
+class DisagreementGatedSparseWeight(nn.Module):
+    """Research point 2: disagreement-gated dual-evidence sparse weights."""
 
-    def __init__(self, fusion: str = "reliability", blob_rescue: bool = False) -> None:
+    def __init__(self, mode: str = "disagreement", blob_rescue: bool = False) -> None:
         super().__init__()
-        if fusion not in {"reliability", "product"}:
-            raise ValueError("fusion must be 'reliability' or 'product'")
-        self.fusion = fusion
+        if mode not in {"disagreement", "product", "fixed_gate"}:
+            raise ValueError("mode must be 'disagreement', 'product', or 'fixed_gate'")
+        self.mode = mode
         self.blob_rescue = bool(blob_rescue)
         self.structure = FixedStructureTensor()
         self.raw_structure_slope = nn.Parameter(torch.tensor(_inverse_softplus(1.0)))
         self.structure_bias = nn.Parameter(torch.tensor(0.0))
         self.raw_sparse_epsilon = nn.Parameter(torch.tensor(_inverse_softplus(0.01)))
-        self.reliability_intercept = nn.Parameter(torch.tensor(0.5))
-        self.raw_uncertainty_slope = nn.Parameter(torch.tensor(_inverse_softplus(1.0)))
+        self.gate_intercept = nn.Parameter(torch.tensor(0.5))
+        self.raw_disagreement_slope = nn.Parameter(torch.tensor(_inverse_softplus(1.0)))
         self.raw_blob_gamma = nn.Parameter(torch.tensor(-2.0))
 
     def forward(
         self,
         background: torch.Tensor,
         sparse: torch.Tensor,
-        uncertainty: torch.Tensor,
+        scale_disagreement: torch.Tensor,
         sparse_source: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         coherence, energy, _ = self.structure(background)
@@ -302,12 +339,17 @@ class ReliabilityCalibratedWeight(nn.Module):
         raw_sparse = -0.5 * torch.log(sparse.square() + sparse_epsilon.square())
         q_sparse = _spatial_standardize(raw_sparse)
 
-        uncertainty_slope = F.softplus(self.raw_uncertainty_slope) + EPS_SCALE
-        reliability = torch.sigmoid(self.reliability_intercept - uncertainty_slope * uncertainty)
-        if self.fusion == "product":
+        disagreement_slope = F.softplus(self.raw_disagreement_slope) + EPS_SCALE
+        if self.mode == "fixed_gate":
+            structure_gate = torch.full_like(scale_disagreement, 0.5)
+        else:
+            structure_gate = torch.sigmoid(
+                self.gate_intercept - disagreement_slope * scale_disagreement
+            )
+        if self.mode == "product":
             log_weight = q_background + q_sparse
         else:
-            log_weight = reliability * q_background + (1.0 - reliability) * q_sparse
+            log_weight = structure_gate * q_background + (1.0 - structure_gate) * q_sparse
 
         blob_response = torch.zeros_like(background)
         blob_gamma = torch.zeros((), dtype=background.dtype, device=background.device)
@@ -328,7 +370,7 @@ class ReliabilityCalibratedWeight(nn.Module):
             "q_sparse": q_sparse,
             "coherence": coherence,
             "energy": energy,
-            "reliability": reliability,
+            "structure_gate": structure_gate,
             "blob_response": blob_response,
             "blob_gamma": blob_gamma,
         }
@@ -341,23 +383,28 @@ class RCPUnfoldStage(nn.Module):
         self,
         hidden_channels: int = 24,
         patch_specs: Sequence[Tuple[int, int]] = ((8, 4), (12, 6), (16, 8)),
-        fusion: str = "reliability",
+        weight_mode: str = "disagreement",
         use_feedback: bool = True,
         blob_rescue: bool = False,
-        anchor_mode: str = "patch",
+        background_mode: str = "patch",
+        background_fusion: str = "deviation",
         signed_sparse: bool = False,
     ) -> None:
         super().__init__()
-        if anchor_mode not in {"patch", "global"}:
-            raise ValueError("anchor_mode must be 'patch' or 'global'")
+        if background_mode not in {"patch", "global"}:
+            raise ValueError("background_mode must be 'patch' or 'global'")
         self.use_feedback = bool(use_feedback)
         self.signed_sparse = bool(signed_sparse)
-        self.anchor_mode = anchor_mode
-        self.background_anchor = (
-            PatchConsensusAnchor(patch_specs) if anchor_mode == "patch" else GlobalAnchor()
+        self.background_mode = background_mode
+        self.background_estimator = (
+            MultiScalePatchLowRankEstimator(patch_specs, fusion_mode=background_fusion)
+            if background_mode == "patch"
+            else GlobalLowRankEstimator()
         )
         self.background_correction = BoundedCorrection(3, hidden_channels)
-        self.weight_model = ReliabilityCalibratedWeight(fusion=fusion, blob_rescue=blob_rescue)
+        self.weight_model = DisagreementGatedSparseWeight(
+            mode=weight_mode, blob_rescue=blob_rescue
+        )
         self.raw_lambda = nn.Parameter(torch.tensor(_inverse_softplus(0.02)))
         self.sparse_correction = BoundedCorrection(4, hidden_channels)
         self.dual_gate = nn.Sequential(
@@ -378,24 +425,26 @@ class RCPUnfoldStage(nn.Module):
         mu: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         z_background = image - sparse + dual
-        background_bar, patch_anchors, branch_weights, uncertainty = self.background_anchor(
+        background_bar, scale_backgrounds, scale_weights, scale_disagreement = self.background_estimator(
             z_background, mu
         )
         background_scale = _spatial_rms(z_background).detach()
         background_delta, gamma_background = self.background_correction(
-            background_scale, z_background, background_bar, uncertainty
+            background_scale, z_background, background_bar, scale_disagreement
         )
         background_next = background_bar + background_delta
 
         z_sparse = image - background_next + dual
-        weight_trace = self.weight_model(background_next, sparse, uncertainty, z_sparse)
+        weight_trace = self.weight_model(
+            background_next, sparse, scale_disagreement, z_sparse
+        )
         sparse_weight = weight_trace["weight"]
         sparse_threshold = (F.softplus(self.raw_lambda) + EPS_SCALE) * sparse_weight / mu.clamp_min(0.05)
         threshold_fn = signed_soft_threshold if self.signed_sparse else positive_soft_threshold
         sparse_bar = threshold_fn(z_sparse, sparse_threshold)
         sparse_scale = _spatial_rms(z_sparse).detach()
         sparse_delta, gamma_sparse = self.sparse_correction(
-            sparse_scale, z_sparse, sparse_bar, sparse_weight, uncertainty
+            sparse_scale, z_sparse, sparse_bar, sparse_weight, scale_disagreement
         )
         corrected_sparse = sparse_bar + sparse_delta
         sparse_next = corrected_sparse if self.signed_sparse else F.relu(corrected_sparse)
@@ -423,14 +472,14 @@ class RCPUnfoldStage(nn.Module):
             "sparse_intensity": sparse_next,
             "background_bar": background_bar,
             "sparse_bar": sparse_bar,
-            "patch_anchors": patch_anchors,
-            "branch_weights": branch_weights,
-            "uncertainty": uncertainty,
+            "scale_backgrounds": scale_backgrounds,
+            "scale_weights": scale_weights,
+            "scale_disagreement": scale_disagreement,
             "w_rcp": sparse_weight,
             "q_background": weight_trace["q_background"],
             "q_sparse": weight_trace["q_sparse"],
             "coherence": weight_trace["coherence"],
-            "structure_reliability": weight_trace["reliability"],
+            "structure_gate": weight_trace["structure_gate"],
             "blob_response": weight_trace["blob_response"],
             "blob_gamma": weight_trace["blob_gamma"],
             "sparse_threshold": sparse_threshold,
@@ -458,10 +507,11 @@ class RCPRiRUFold(nn.Module):
         stage_num: int = 5,
         hidden_channels: int = 24,
         patch_specs: Sequence[Tuple[int, int]] = ((8, 4), (12, 6), (16, 8)),
-        fusion: str = "reliability",
+        weight_mode: str = "disagreement",
         use_feedback: bool = True,
         blob_rescue: bool = False,
-        anchor_mode: str = "patch",
+        background_mode: str = "patch",
+        background_fusion: str = "deviation",
         signed_sparse: bool = False,
     ) -> None:
         super().__init__()
@@ -473,10 +523,11 @@ class RCPRiRUFold(nn.Module):
                 RCPUnfoldStage(
                     hidden_channels=hidden_channels,
                     patch_specs=patch_specs,
-                    fusion=fusion,
+                    weight_mode=weight_mode,
                     use_feedback=use_feedback,
                     blob_rescue=blob_rescue,
-                    anchor_mode=anchor_mode,
+                    background_mode=background_mode,
+                    background_fusion=background_fusion,
                     signed_sparse=signed_sparse,
                 )
                 for _ in range(self.stage_num)
@@ -545,10 +596,12 @@ def build_rcp_model(name: str = "rirufold_rcp", **kwargs) -> RCPRiRUFold:
     """Build the main model or a preregistered ablation by server-facing name."""
     configurations = {
         "rirufold_rcp": {},
-        "rirufold_rcp_product": {"fusion": "product"},
+        "rirufold_rcp_product": {"weight_mode": "product"},
+        "rirufold_rcp_fixedgate": {"weight_mode": "fixed_gate"},
+        "rirufold_rcp_mean": {"background_fusion": "mean"},
         "rirufold_rcp_nofeedback": {"use_feedback": False},
         "rirufold_rcp_blob": {"blob_rescue": True},
-        "rirufold_rcp_global": {"anchor_mode": "global"},
+        "rirufold_rcp_global": {"background_mode": "global"},
         "rirufold_rcp_signed": {"signed_sparse": True},
     }
     if name not in configurations:

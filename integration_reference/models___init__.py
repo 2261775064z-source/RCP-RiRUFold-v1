@@ -2,6 +2,7 @@ from .deepunfolding import *
 from .RiRFold import RiRFold
 from .rirufold_admm import RiRFoldADMM
 from .rirufold_rcp import build_rcp_model
+from .rirufold_cmc import build_cmc_model
 from .unfolding_ablation import ADMMLikeUnfolding, RiRFoldNoFeedback
 
 def get_model(name, net=None, **kwargs):
@@ -47,6 +48,13 @@ def get_model(name, net=None, **kwargs):
 
     elif name.startswith('rirufold_rcp'):
         net = build_rcp_model(
+            name,
+            stage_num=kwargs.get('stage_num', 5),
+            hidden_channels=kwargs.get('hidden_channels', 24),
+        )
+
+    elif name.startswith('rirufold_cmc'):
+        net = build_cmc_model(
             name,
             stage_num=kwargs.get('stage_num', 5),
             hidden_channels=kwargs.get('hidden_channels', 24),

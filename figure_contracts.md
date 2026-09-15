@@ -21,3 +21,34 @@
 源数据追溯：真实数据来自 `datasets/NUDT-SIRST/test/{images,masks}`；合成场景由
 `scripts/run_rcp_research.py` 在固定种子下生成。数据剖析表记录每张图的尺寸、强度
 范围、均值、标准差、目标像素数和连通域数；未执行删行或异常值剔除。
+
+## CMC-RiRUFold 第二研究问题 q2
+
+`q2` 检查“候选观测排除—行随机侧先验—掩蔽低秩补全—正精度共识”是否形成可实现、
+可诊断、可否证的第二套展开方法。合成目标面积按本地 NUDT-SIRST 测试掩膜的中位
+像素占比约 `39/65536` 校准；所有 result 图仍是固定初始化的未训练机制结果。
+
+| 文件 | 核心结论 | 类别/原型 | 主证据与统计 | 输出与风险控制 |
+|---|---|---|---|---|
+| `raw_q2_synthetic_challenges` | 合成门禁同时包含数据量级小目标、阶跃和斜纹理 | raw_q2；同尺度网格 | 输入、无目标背景、目标支持、杂波支持 | 7.2 in，SVG+300 DPI PNG；目标面积依据真实数据校准 |
+| `raw_q2_candidate_score_profiles` | 候选分数在亮点附近降低直接背景观测权 | raw_q2；单面板 | 固定场景目标行上的 `A/C/V` | 6.3 in；不把 `C` 称分割概率；线型支持灰度辨识 |
+| `raw_q2_nudt_local_contrast` | 真实 NUDT 目标与背景的正局部对比分布不同 | raw_q2；ECDF | 前 32 张测试图；目标全像素、背景固定步长抽样 | 6.3 in；不做像素独立显著性检验，不据此选 test 参数 |
+| `process_q2_mask_completion_sequence` | 初始侧先验和两次低秩更新均可直接追踪 | process_q2；顺序图 | `C/V/B_A/L^1/L^2` 同一阶段状态 | 7.2 in；只说明数值交换发生，不声称目标单调下降 |
+| `process_q2_precision_components` | 三路精度与候选面积日程均显式可导出 | process_q2；双面板 | 每阶段 `p_X/p_L/p_A` 与 mask mean/schedule | 6.3 in；同单位分面，不用双轴 |
+| `process_q2_stage_residuals` | residual、mask 和反事实损失随阶段可诊断 | process_q2；双面板 | primal/dual 按首阶段归一化；两个辅助损失原值 | 6.3 in；不从未训练轨迹声称收敛 |
+| `result_q2_counterfactual_decomposition` | 背景、物理稀疏量与概率输出保持不同语义 | result_q2；图像网格 | 固定合成场景与无目标背景真值 | 7.2 in；标题显式注明 untrained；不作为检测精度 |
+| `result_q2_mechanism_metrics` | mask/side 缺失时目标吸收明显，其他消融保留权衡 | result_q2；原始点+中位数 | 8 个固定合成场景，无删点 | 6.3 in；不用均值柱，不隐藏 `onepass` 接近主线的事实 |
+| `result_q2_ablation_tradeoff` | 目标吸收与目标—边缘分离必须联合判断 | result_q2；关系图 | 五个配置的逐场景中位数 | 6.3 in；直接标注，方向写入坐标名；不外推 mIoU/Pd/Fa |
+
+服务器训练完成后由 `scripts/analyze_cmc_server_results.py` 生成下列正式结果图；当前
+仓库不预填任何训练精度，也不允许用合成占位数字生成这些文件。
+
+| 文件 | 核心结论 | 类别/原型 | 主证据与统计 | 输出与风险控制 |
+|---|---|---|---|---|
+| `result_q2_server_main` | CMC 与旧 ADMM、第一方案 RCP 的跨数据集主比较 | result_q2；四指标分面点线图 | 三数据集、三个配对 seed 的 mean±std | 7.2 in；全部完整 test；同 split hash/threshold；不挑 seed |
+| `result_q2_server_ablation` | mask、side、inner exchange、stage re-estimation 的训练后作用 | result_q2；四指标分面点线图 | CMC 与四个预注册消融，mean±std | 7.2 in；完整展示五配置；不隐藏 onepass 负结果 |
+| `result_q2_server_paired_gain` | CMC 相对 RCP 的逐数据集配对增益方向和不确定性 | result_q2；区间点图 | 三个 seed 的配对差及描述性 bootstrap 95% CI | 7.2 in；正值统一表示 CMC 更好；n=3 不称统计显著 |
+
+q2 原始数据由 `scripts/run_cmc_research.py --seed 20260912` 生成，归档于
+`results/cmc_mechanism_metrics.csv`、`cmc_stage_trace.csv`、`cmc_mask_scan.csv`、
+`cmc_model_complexity.csv`、`cmc_nudt_profile.csv` 与 `cmc_run_summary.json`。

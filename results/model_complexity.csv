@@ -1,0 +1,4 @@
+﻿variant,trainable_parameters,stage_num,hidden_channels
+rirufold_rcp,5777,3,8
+rirufold_rcp_product,5777,3,8
+rirufold_rcp_blob,5777,3,8

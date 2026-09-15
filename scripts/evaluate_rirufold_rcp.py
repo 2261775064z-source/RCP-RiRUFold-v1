@@ -1,4 +1,4 @@
-"""Evaluate a trained RCP-RiRUFold checkpoint on an explicit test split."""
+"""Evaluate a trained ADMM/RCP/CMC checkpoint on an explicit test split."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ REPO_ROOT = PROJECT_ROOT.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from RiRUFold_ADMM.models.rirufold_rcp import build_rcp_model  # noqa: E402
+from RiRUFold_ADMM.models.rirufold_cmc import build_cmc_model  # noqa: E402
 from RiRUFold_ADMM.models.rirufold_admm import RiRFoldADMM  # noqa: E402
 
 
@@ -145,7 +146,7 @@ class DetectionMeter:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Independent RCP-RiRUFold checkpoint evaluation")
+    parser = argparse.ArgumentParser(description="Independent RiRUFold checkpoint evaluation")
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument(
         "--net-name",
@@ -154,10 +155,17 @@ def parse_args() -> argparse.Namespace:
             "rirufold_admm",
             "rirufold_rcp",
             "rirufold_rcp_product",
+            "rirufold_rcp_fixedgate",
+            "rirufold_rcp_mean",
             "rirufold_rcp_nofeedback",
             "rirufold_rcp_blob",
             "rirufold_rcp_global",
             "rirufold_rcp_signed",
+            "rirufold_cmc",
+            "rirufold_cmc_nomask",
+            "rirufold_cmc_noside",
+            "rirufold_cmc_onepass",
+            "rirufold_cmc_fixedmask",
         ],
     )
     parser.add_argument("--dataset", required=True, choices=["nudt", "irstd1k", "sirstaug"])
@@ -214,8 +222,14 @@ def main() -> None:
             hidden_channels=args.hidden_channels,
             use_svt=True,
         ).to(device)
-    else:
+    elif args.net_name.startswith("rirufold_rcp"):
         model = build_rcp_model(
+            args.net_name,
+            stage_num=args.stage_num,
+            hidden_channels=args.hidden_channels,
+        ).to(device)
+    else:
+        model = build_cmc_model(
             args.net_name,
             stage_num=args.stage_num,
             hidden_channels=args.hidden_channels,

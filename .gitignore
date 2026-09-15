@@ -11,6 +11,7 @@ figures/_qa/
 *.pt
 *.ckpt
 events.out.tfevents.*
-result*/
+result/
+result_*/
 checkpoints/
 outputs/

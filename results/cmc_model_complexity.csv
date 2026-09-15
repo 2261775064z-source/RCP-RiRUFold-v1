@@ -1,0 +1,6 @@
+﻿variant,trainable_parameters,stage_num,inner_steps,mask_enabled,side_prior_enabled,fixed_mask
+rirufold_cmc,6014,3,2,1,1,0
+rirufold_cmc_nomask,6014,3,2,0,1,0
+rirufold_cmc_noside,6014,3,2,1,0,0
+rirufold_cmc_onepass,6014,3,1,1,1,0
+rirufold_cmc_fixedmask,6014,3,2,1,1,1
